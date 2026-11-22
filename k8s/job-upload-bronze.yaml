@@ -1,0 +1,86 @@
+# Ingestion (bronze): download the 132 raw monthly CSVs from the public GitHub repo and copy them
+# unchanged to s3://$BUCKET/bronze/statcounter/.
+#
+# Prerequisites (see README): ConfigMap "s3-config" (AWS_ENDPOINT_URL, AWS_DEFAULT_REGION, BUCKET)
+# and Secret "s3-credentials" (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN).
+#
+# The data is NOT mounted from a ConfigMap (1 MiB limit): an initContainer (curl) downloads the files
+# into a shared emptyDir, then the aws-cli container uploads them.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: upload-bronze
+  labels:
+    app: bigdata-project
+    stage: bronze
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app: bigdata-project
+        stage: bronze
+    spec:
+      restartPolicy: Never
+      volumes:
+        - name: raw-data
+          emptyDir:
+            sizeLimit: 100Mi
+      initContainers:
+        - name: download
+          image: curlimages/curl:8.10.1
+          env:
+            - name: REPO_RAW_URL
+              value: "https://raw.githubusercontent.com/jenzah/bigdata-project/main/src/data/raw"
+            - name: FILE_PREFIX
+              value: "Statcounter-Social-Media-Country-desktop-mobile-tablet-console"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              cd /data
+              n=0
+              for y in $(seq 2015 2025); do
+                for m in 01 02 03 04 05 06 07 08 09 10 11 12; do
+                  f="${FILE_PREFIX}-${y}-${m}.csv"
+                  curl -fsSL --retry 3 --retry-delay 2 -o "$f" "${REPO_RAW_URL}/${f}"
+                  n=$((n + 1))
+                done
+              done
+              echo "Downloaded $n files:"
+              ls -l /data | head -5
+              du -ch /data/*.csv | tail -1
+              [ "$n" -eq 132 ] || { echo "Expected 132 files"; exit 1; }
+          volumeMounts:
+            - name: raw-data
+              mountPath: /data
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 128Mi }
+      containers:
+        - name: upload
+          image: amazon/aws-cli:2.17.0
+          envFrom:
+            - configMapRef:
+                name: s3-config
+            - secretRef:
+                name: s3-credentials
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              echo "Uploading to s3://${BUCKET}/bronze/statcounter/ via ${AWS_ENDPOINT_URL}"
+              aws s3 cp /data/ "s3://${BUCKET}/bronze/statcounter/" --recursive \
+                --exclude "*" --include "*.csv" --endpoint-url "${AWS_ENDPOINT_URL}" --only-show-errors
+              echo "Objects now in bronze:"
+              aws s3 ls "s3://${BUCKET}/bronze/statcounter/" --endpoint-url "${AWS_ENDPOINT_URL}" | wc -l
+              aws s3 ls "s3://${BUCKET}/bronze/statcounter/" --endpoint-url "${AWS_ENDPOINT_URL}" \
+                --summarize --human-readable | tail -2
+          volumeMounts:
+            - name: raw-data
+              mountPath: /data
+              readOnly: true
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
