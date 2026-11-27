@@ -30,9 +30,13 @@ def bucket() -> str:
     return b
 
 
+def project_root() -> str:
+    return f"s3a://{bucket()}"
+
+
 def default_paths() -> dict:
     """Default S3A paths of the medallion layers (see src/CONTRACT.md)."""
-    root = f"s3a://{bucket()}"
+    root = project_root()
     return {
         "bronze": f"{root}/bronze/statcounter/",
         "silver": f"{root}/silver/social_share/",
@@ -69,7 +73,8 @@ def get_spark(app_name: str, s3: bool = True) -> SparkSession:
     builder = (
         SparkSession.builder.appName(app_name)
         .master(os.environ.get("SPARK_MASTER", "local[*]"))
-        .config("spark.driver.memory", os.environ.get("SPARK_DRIVER_MEMORY", "4g"))
+        # Onyxia quota here is 4 GiB for the whole namespace: keep the driver small by default.
+        .config("spark.driver.memory", os.environ.get("SPARK_DRIVER_MEMORY", "1g"))
         # Small data: 200 shuffle partitions would mostly be overhead.
         .config("spark.sql.shuffle.partitions", os.environ.get("SPARK_SHUFFLE_PARTITIONS", "16"))
         .config("spark.sql.session.timeZone", "UTC")

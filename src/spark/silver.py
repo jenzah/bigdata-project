@@ -27,7 +27,7 @@ HEADER_FIRST_CELL = "Social Media"
 # look-ahead regex overflows the Java stack on the 100x lines of ~150 KB.) Any quoted field that
 # would have been cut by a comma is counted in dq_broken_quoted_fields.
 CSV_SPLIT_REGEX = ","
-FILE_DATE_REGEX = r"(\d{4})-(\d{2})\.csv$"
+FILE_DATE_REGEX = r"(\\d{4})-(\\d{2})\\.csv$"
 
 # Platform names are standardised case-insensitively; unknown names are kept as-is (trimmed).
 PLATFORM_ALIASES = {
@@ -75,9 +75,10 @@ def _map_expr(mapping: dict, col: F.Column, default: F.Column) -> F.Column:
 
 def read_bronze(spark: SparkSession, input_path: str) -> DataFrame:
     """Read every CSV line as text, keeping the source file name; split into clean fields."""
-    pattern = input_path.rstrip("/") + "/*.csv"
+    # Read the folder with a file filter (a "*.csv" glob in the path makes Spark print a
+    # misleading FileNotFoundException warning while it looks for streaming metadata).
     lines = (
-        spark.read.text(pattern)
+        spark.read.option("pathGlobFilter", "*.csv").text(input_path.rstrip("/") + "/")
         .withColumn("source_file", F.regexp_extract(F.input_file_name(), r"([^/]+)$", 1))
         .withColumn("line", F.regexp_replace("value", "^\ufeff", ""))  # strip UTF-8 BOM
         .filter(F.trim("line") != "")
@@ -124,8 +125,9 @@ def build_silver(spark: SparkSession, input_path: str, output_path: str) -> dict
             F.col("c.countries").alias("raw_country"),
             F.col("c.raw_values").alias("raw_value"),
         )
-        .withColumn("year", F.regexp_extract("source_file", FILE_DATE_REGEX, 1).cast("int"))
-        .withColumn("month", F.regexp_extract("source_file", FILE_DATE_REGEX, 2).cast("int"))
+        # try_cast: Spark 4 runs in ANSI mode, where casting "" (no regex match) would raise an error.
+        .withColumn("year", F.expr(f"try_cast(regexp_extract(source_file, '{FILE_DATE_REGEX}', 1) AS INT)"))
+        .withColumn("month", F.expr(f"try_cast(regexp_extract(source_file, '{FILE_DATE_REGEX}', 2) AS INT)"))
     )
     long_raw = long_raw.withColumn(
         "share_pct",
