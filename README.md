@@ -22,6 +22,7 @@ git clone https://github.com/jenzah/bigdata-project.git && cd bigdata-project
 export BUCKET="$KUBERNETES_NAMESPACE"
 export S3_ENDPOINT_URL=$(aws configure get endpoint_url --profile 'default' || echo "https://$AWS_S3_ENDPOINT")
 S3="--profile default --endpoint-url $S3_ENDPOINT_URL"
+
 # 1. Ingestion bronze (Job Kubernetes : GitHub -> S3)
 bash k8s/create-config.sh                       # ConfigMap s3-config + Secret s3-credentials
 kubectl apply -f k8s/job-upload-bronze.yaml
@@ -29,6 +30,7 @@ kubectl wait --for=condition=complete job/upload-bronze --timeout=600s
 kubectl logs job/upload-bronze -c download; kubectl logs job/upload-bronze -c upload
 aws s3 ls s3://$BUCKET/bronze/statcounter/ $S3 --summarize --human-readable | tail -2   # 132 objets
 kubectl delete job upload-bronze; kubectl delete configmap s3-config; kubectl delete secret s3-credentials
+
 # 2. Bronze -> Silver (Spark)          -> logs et compteurs qualité dans src/logs/silver_metrics.json
 python src/spark/silver.py
 # 3. Silver -> Gold (Spark)            -> src/data/gold/facebook_decline.csv + src/logs/gold_metrics.json
